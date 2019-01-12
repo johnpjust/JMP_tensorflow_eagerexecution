@@ -1,4 +1,11 @@
 # tensorflow_eagerexecuation
+"""
+This is an implementation of a simple 2-layer neural network for regression (Gaussian, Laplacian MLE) and 
+classification (cross entropy/Multinomial MLE) that I built as an interface for JMP to extend capabilities of the software 
+with various other activation functions and soft classification.  The optimizer uses L-BFGS instead of SGD variants such as ADAM, 
+which I've found vastly improves convergence and accuracy.
+"""
+
 
 import pandas as pd
 import numpy as np
