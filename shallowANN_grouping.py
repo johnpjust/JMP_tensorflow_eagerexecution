@@ -12,7 +12,7 @@ from scipy import stats
 
 def smooth_abs_tf(x):
     #asdjksfdajk
-    tf.square(x) / tf.sqrt(tf.square(x) + .01 ** 2)
+    return tf.square(x) / tf.sqrt(tf.square(x) + .01 ** 2)
 
 class Groupby:
     def __init__(self, keys, use_tf=False):
@@ -408,10 +408,15 @@ else:
     loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, weights=weights_train, grouper = None, regL2 = regL2_in, regL1 = regL1_in, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
     loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = -1, regL1 = -1, x=np.float64(0), var_reg = np.float64(0),std_reg = std_reg_in, L1=L1)
 
+regL2_in = 0
+regL1_in = 0
+var_reg_in = 0
+std_reg_in = 0
+
 ## get size and shape of trainable variables (reshaping required for input/output from scipy optimization)
 ## as well as the tf trainable variable list for updating
 with tf.GradientTape() as tape:
-    prediction_loss, _, _ = loss_train(x=np.float64(0))
+    prediction_loss, _, _, _, _ = loss_train(x=np.float64(0))
     var_list = tape.watched_variables()
 #################################################################################
 # ## calculate new gradient
