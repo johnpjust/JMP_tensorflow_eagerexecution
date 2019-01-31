@@ -95,7 +95,7 @@ class Evaluator(object):
         self.loss_train_fun = loss_train_fun #func_tools partial function with model, features, and labels already loaded
         self.predLoss_val = loss_val #func_tools partial function with model, features, and labels already loaded
         self.global_step = global_step #tf variable for tracking update steps from scipy optimizer step_callback
-        self.predLoss_val_prev, _, _ = np.float64(loss_val()) + 10.0 #state variable of loss for early stopping
+        self.predLoss_val_prev, _, _, _, _ = np.float64(loss_val()) + 10.0 #state variable of loss for early stopping
         self.predLoss_val_cntr = 0 #counter to watch for early stopping
         self.early_stop_limit = early_stop_limit #number of cycles of increasing validation loss before stopping
         self.var_shapes = var_shapes #list of shapes of each tf variable
@@ -149,7 +149,7 @@ class Evaluator(object):
         else:
             return False
 #
-def prediction_classifier(features, label, model, x, regL2 = -1, regL1 = -1, grouper=None, weights=1.0, var_reg=-1, std_reg=-1, L1=False):
+def prediction_classifier(features, label, model, x, regL2 = -1.0, regL1 = -1.0, grouper=None, weights=1.0, var_reg=-1.0, std_reg=-1.0, L1=False):
     predicted_label = model(features)
     regL2_penalty = 0
     regL1_penalty = 0
@@ -168,7 +168,7 @@ def prediction_classifier(features, label, model, x, regL2 = -1, regL1 = -1, gro
 #     loss = tf.squared_difference(label, predicted_label)
 #     return tf.reduce_sum(tf.add( tf.add(tf.reduce_mean(tf.multiply(loss, weights), axis=0), tf.multiply(reg,reg_penalty)), tf.multiply(var_reg, predicted_var ))), np.float64(reg_penalty), np.float64(predicted_var)
 
-def prediction_loss_regression(features, label, model, x, regL2 = -1, regL1 = -1, grouper=None, weights=1.0, var_reg=-1, std_reg=-1, L1=False):
+def prediction_loss_regression(features, label, model, x, regL2 = -1.0, regL1 = -1.0, grouper=None, weights=1.0, var_reg=-1.0, std_reg=-1.0, L1=False):
     #uses an abs function approximation
     predicted_label = model(features)
     predicted_var = 0
@@ -183,7 +183,6 @@ def prediction_loss_regression(features, label, model, x, regL2 = -1, regL1 = -1
         if std_reg >= 0:  predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_var, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
     if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
     if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
-
     if L1: loss = smooth_abs_tf(tf.subtract(label,predicted_label))
     else: loss = tf.squared_difference(label,predicted_label)
     return tf.reduce_sum(tf.add(tf.add(tf.add(tf.add(tf.reduce_mean(tf.multiply(loss, weights), axis=0), tf.multiply(regL2,regL2_penalty)),tf.multiply(regL1,regL1_penalty)), tf.multiply(var_reg, predicted_var )), tf.multiply(std_reg,predicted_std))), \
@@ -403,15 +402,11 @@ else:
 
 if segment:
     loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, regL2 = regL2_in, regL1 = regL1_in, weights=weights_train, grouper = df2_aggregate_train, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, regL2 = -1, regL1 = -1, weights=weights_val, x=np.float64(0), grouper = df2_aggregate_val, var_reg = np.float64(0),std_reg = np.float64(0), L1=L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), weights=weights_val, x=np.float64(0), grouper = df2_aggregate_val, var_reg = np.float64(0),std_reg = np.float64(0), L1=L1)
 else:
     loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, weights=weights_train, grouper = None, regL2 = regL2_in, regL1 = regL1_in, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = -1, regL1 = -1, x=np.float64(0), var_reg = np.float64(0),std_reg = std_reg_in, L1=L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), x=np.float64(0), var_reg = np.float64(0),std_reg = std_reg_in, L1=L1)
 
-regL2_in = 0
-regL1_in = 0
-var_reg_in = 0
-std_reg_in = 0
 
 ## get size and shape of trainable variables (reshaping required for input/output from scipy optimization)
 ## as well as the tf trainable variable list for updating
