@@ -10,9 +10,19 @@ import sys
 from scipy import stats
 #from matplotlib import pyplot as plt
 
+def smooth_abs_tf(x):
+    #asdjksfdajk
+    tf.square(x) / tf.sqrt(tf.square(x) + .01 ** 2)
+
 class Groupby:
-    def __init__(self, keys):
+    def __init__(self, keys, use_tf=False):
         _, self.keys_as_int = np.unique(keys, return_inverse=True)
+
+        if use_tf:
+            ip_addresses = pd.unique(np.squeeze(keys))
+            ip_dict = dict(zip(ip_addresses, range(len(ip_addresses))))
+            self.tf_grouping_vals = pd.DataFrame(keys).replace(ip_dict) ##this takes a long time, esp. on large arrays
+
         self.n_keys = max(self.keys_as_int)
         self.keys_as_int_unique = list(dict.fromkeys(self.keys_as_int))
         self.set_indices()
@@ -34,6 +44,14 @@ class Groupby:
             for k in range(len(self.indices)):
                 result[k] = function(vector[self.indices[self.keys_as_int_unique[k]]])
         return result
+
+    def apply_tf_unsorted_segment_mean(self, vector):
+        ##example function:  tf.math.unsorted_segment_mean
+        return tf.math.unsorted_segment_mean(vector, tf.squeeze(self.tf_grouping_vals.values), np.int(self.tf_grouping_vals.nunique()))
+
+    def apply_tf_gather_nd(self, vector):
+        ##example function:  tf.math.unsorted_segment_mean
+        return tf.gather_nd(vector, self.tf_grouping_vals.values)
 
     def split(self, exists, vector, perc = 0.667):
         if not exists:
@@ -61,7 +79,7 @@ def eval_loss_and_grads(x, loss_train, var_list, var_shapes, var_locs):
 
     ## calculate new gradient
     with tf.GradientTape() as tape:
-        prediction_loss = loss_train(x=x)
+        prediction_loss, regL1_penalty, regL2_penalty, predicted_std, predicted_var = loss_train(x=x)
 
     grad_list = []
     for p in tape.gradient(prediction_loss, var_list):
@@ -69,7 +87,7 @@ def eval_loss_and_grads(x, loss_train, var_list, var_shapes, var_locs):
 
     grad_list = [v if v is not None else 0 for v in grad_list]
 
-    return np.float64(prediction_loss), np.float64(grad_list)
+    return np.float64(prediction_loss), np.float64(grad_list), np.float64(regL1_penalty), np.float64(regL2_penalty), np.float64(predicted_std), np.float64(predicted_var)
 
 class Evaluator(object):
 
@@ -77,20 +95,19 @@ class Evaluator(object):
         self.loss_train_fun = loss_train_fun #func_tools partial function with model, features, and labels already loaded
         self.predLoss_val = loss_val #func_tools partial function with model, features, and labels already loaded
         self.global_step = global_step #tf variable for tracking update steps from scipy optimizer step_callback
-        self.predLoss_val_prev = np.float64(loss_val()) + 10.0 #state variable of loss for early stopping
+        self.predLoss_val_prev, _, _ = np.float64(loss_val()) + 10.0 #state variable of loss for early stopping
         self.predLoss_val_cntr = 0 #counter to watch for early stopping
         self.early_stop_limit = early_stop_limit #number of cycles of increasing validation loss before stopping
         self.var_shapes = var_shapes #list of shapes of each tf variable
         self.var_list = var_list #list of trainable tf variables
         self.var_locs = var_locs
-        self.loss_value = self.loss_train_fun(x=np.float64(0))
+        self.loss_value, self.regL1, self.regL2, self.train_std_reg, self.train_var_reg = self.loss_train_fun(x=np.float64(0))
         self.grads_values = None
+
 
     def loss(self, x):
         # assert self.loss_value is None
-        loss_value, grad_values = eval_loss_and_grads(x, self.loss_train_fun, self.var_list, self.var_shapes, self.var_locs) #eval_loss_and_grads
-        self.loss_value = loss_value
-        self.grad_values = grad_values
+        self.loss_value, self.grad_values, self.regL1, self.regL2, self.train_std_reg, self.train_var_reg = eval_loss_and_grads(x, self.loss_train_fun, self.var_list, self.var_shapes, self.var_locs) #eval_loss_and_grads
         return self.loss_value
 
     def grads(self, x):
@@ -102,7 +119,7 @@ class Evaluator(object):
 
     def step_callback(self, x):
         ## early stopping tracking
-        predLoss_val_temp = np.float64(self.predLoss_val())
+        predLoss_val_temp, _, _, predicted_std_val, predicted_var_val = np.float64(self.predLoss_val())
         if predLoss_val_temp > self.predLoss_val_prev:
             self.predLoss_val_cntr += 1
         else:
@@ -114,6 +131,13 @@ class Evaluator(object):
             tf.contrib.summary.scalar('loss_train', self.loss_value)
             tf.contrib.summary.scalar('loss_val', predLoss_val_temp)
             tf.contrib.summary.scalar('predLoss_val_cntr', self.predLoss_val_cntr)
+            tf.contrib.summary.scalar('regL1', self.regL1)
+            tf.contrib.summary.scalar('regL2', self.regL2)
+            tf.contrib.summary.scalar('train_std_reg', self.train_std_reg)
+            tf.contrib.summary.scalar('train_var_reg', self.train_var_reg)
+            tf.contrib.summary.scalar('val_std_reg', predicted_std_val)
+            tf.contrib.summary.scalar('val_var_reg', predicted_var_val)
+
 
         # increment the global step counter
         self.global_step.assign_add(1)
@@ -124,46 +148,46 @@ class Evaluator(object):
             return True
         else:
             return False
-
 #
-def prediction_classifier(features, label, model, reg, x, grouper=None):
+def prediction_classifier(features, label, model, x, regL2 = -1, regL1 = -1, grouper=None, weights=1.0, var_reg=-1, std_reg=-1, L1=False):
     predicted_label = model(features)
-    return tf.add(tf.losses.softmax_cross_entropy(label, predicted_label), tf.multiply(reg, tf.reduce_sum(tf.square(x))))
+    regL2_penalty = 0
+    regL1_penalty = 0
+    if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
+    if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
+    return tf.add(tf.add( tf.reduce_mean(tf.multiply(tf.losses.softmax_cross_entropy(label, predicted_label, reduce=None), weights, axis=0)), tf.multiply(regL2, regL2_penalty)), tf.multiply(regL1, regL1_penalty)), np.float64(regL1_penalty), np.float64(regL2_penalty), 0, 0
 
-def prediction_loss_L2(features, label, model, reg, x, grouper=None, weights=1, var_reg=None):
-    predicted_label = model(features)
-    if grouper:  predicted_label = grouper.apply(np.mean, predicted_label, broadcast=False)
-    if var_reg:
-        predicted_var = grouper.apply(np.var, predicted_label, broadcast=False)
-    return tf.reduce_sum(tf.add( tf.multiply(tf.add(tf.reduce_sum(tf.squared_difference(label, predicted_label), axis=0),tf.multiply(reg, tf.reduce_sum(tf.square(x)))), weights),  tf.multiply() ))
+# def prediction_loss_L2(features, label, model, x, reg = 0, grouper=None, weights=1.0, var_reg=None):
+#     predicted_label = model(features)
+#     predicted_var = 0
+#     if grouper:
+#         predicted_var = predicted_label
+#         predicted_label = grouper.apply_tf_unsorted_segment_mean(predicted_label)
+#         predicted_var = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, grouper.apply_tf_gather_nd(predicted_label))), axis=0)
+#     reg_penalty =  tf.reduce_mean(tf.square(x))
+#     loss = tf.squared_difference(label, predicted_label)
+#     return tf.reduce_sum(tf.add( tf.add(tf.reduce_mean(tf.multiply(loss, weights), axis=0), tf.multiply(reg,reg_penalty)), tf.multiply(var_reg, predicted_var ))), np.float64(reg_penalty), np.float64(predicted_var)
 
-def prediction_loss_L1(features, label, model, reg, x, grouper=None, weights=1, var_reg=None):
+def prediction_loss_regression(features, label, model, x, regL2 = -1, regL1 = -1, grouper=None, weights=1.0, var_reg=-1, std_reg=-1, L1=False):
     #uses an abs function approximation
     predicted_label = model(features)
-    loss = tf.subtract(label,predicted_label)
-    return tf.reduce_sum(tf.add(tf.reduce_sum(tf.square(loss) / tf.sqrt(tf.square(loss) + .01**2), axis=0) , tf.multiply(reg, tf.reduce_sum(tf.square(x)))))
+    predicted_var = 0
+    predicted_std = 0
+    regL2_penalty = 0
+    regL1_penalty = 0
+    if grouper:
+        predicted_var = predicted_label
+        predicted_std = predicted_label
+        predicted_label = grouper.apply_tf_unsorted_segment_mean(predicted_label)
+        if var_reg >= 0: predicted_var = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, grouper.apply_tf_gather_nd(predicted_label))), axis=0)
+        if std_reg >= 0:  predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_var, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
+    if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
+    if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
 
-
-def mode(df, key_cols, value_col, count_col):
-    '''
-    Pandas does not provide a `mode` aggregation function
-    for its `GroupBy` objects. This function is meant to fill
-    that gap, though the semantics are not exactly the same.
-
-    The input is a DataFrame with the columns `key_cols`
-    that you would like to group on, and the column
-    `value_col` for which you would like to obtain the mode.
-
-    The output is a DataFrame with a record per group that has at least one mode
-    (null values are not counted). The `key_cols` are included as columns, `value_col`
-    contains a mode (ties are broken arbitrarily and deterministically) for each
-    group, and `count_col` indicates how many times each mode appeared in its group.
-    '''
-    return df.groupby(key_cols + [value_col]).size() \
-             .to_frame(count_col).reset_index() \
-             .sort_values(count_col, ascending=False) \
-             .drop_duplicates(subset=key_cols)
-
+    if L1: loss = smooth_abs_tf(tf.subtract(label,predicted_label))
+    else: loss = tf.squared_difference(label,predicted_label)
+    return tf.reduce_sum(tf.add(tf.add(tf.add(tf.add(tf.reduce_mean(tf.multiply(loss, weights), axis=0), tf.multiply(regL2,regL2_penalty)),tf.multiply(regL1,regL1_penalty)), tf.multiply(var_reg, predicted_var )), tf.multiply(std_reg,predicted_std))), \
+           np.float64(regL1_penalty), np.float64(regL2_penalty), np.float64(predicted_std), np.float64(predicted_var)
 
 """
 All operations need to be in 64 bit floats for use with scipy optimizers and also to
@@ -198,23 +222,22 @@ df2.res5k.loc[df2.res5k == 0] = 4E7
 #df2_gt = pd.DataFrame(df.iloc[:, [*[i for i in range(474, 477)]]] / 100)
 #df2_gt = pd.DataFrame(df.iloc[:,[-9]])
 df2_gt = pd.DataFrame(df.iloc[:,[19]])
-#df2_groups = pd.DataFrame(df.iloc[:, -1])
+# df2_groups = pd.DataFrame(df.iloc[:, -1])
 
 df2_aggregate = pd.DataFrame(df.iloc[:,[1]])
 
-try:
-    df2_aggregate = pd.DataFrame(df2_aggregate)
-    segment = True
-except:
-    segment = False
 
-reg_in = 0
+regL2_in = 0
+regL1_in = 0
+var_reg_in = 0
+std_reg_in = 0
 n_hidden_units_in = 3
 loss_fun = "L1"#, "L2", "L1", "Classifier"
 activation_in = 'elu' #options = "lrelu", "relu", "tanh", "linear", "selu", "elu"
 early_stop_limit = 100
 maxiter = 500
 factr = 1E7
+frac_split = 0.667
 
 ## include these in JMP implementation
 # df2 = pd.DataFrame(df2)
@@ -223,49 +246,76 @@ factr = 1E7
 # df2_aggregate = pd.DataFrame(df2_aggregate) #optional
 # weights = pd.DataFrame(weights) #optional
 
+## grouping/aggregation
+try:
+    df2_aggregate = pd.DataFrame(df2_aggregate)
+    segment = True
+except:
+    segment = False
+
+## train/val split
+try:
+    df2_groups = pd.DataFrame(df2_groups)
+    if segment:
+        split_groups = Groupby(df2_aggregate.values)
+        df2_groups = pd.DataFrame(split_groups.split(True, df2_groups.values), columns=['split_levels'])
+
+    if not (df2_groups.iloc[:, 0].unique().shape[0] >= 2):
+        # need to set the split level -- determine if grouped or not
+        if segment:
+            df2_groups = pd.DataFrame(split_groups.split(False, df2_groups.values, frac_split), columns=['split_levels'])
+        else:
+            df2_groups = pd.DataFrame(np.ceil(np.maximum(0, np.random.uniform(0, 1, (df2.shape[0], 1)) - frac_split)), columns=['split_levels']) #mode of each group if already exists
+    else:
+        # just use the mode to ensure each group only has one split level
+        if segment:
+            df2_groups = pd.DataFrame(split_groups.split(True, df2_groups.values), columns=['split_levels'])
+
+except:
+    if segment:
+        split_groups = Groupby(df2_aggregate.values)
+        df2_groups = pd.DataFrame(split_groups.split(False, df2_gt.values, frac_split), columns=['split_levels'])
+    else:
+        df2_groups = pd.DataFrame(np.ceil(np.maximum(0, np.random.uniform(0, 1, (df2.shape[0], 1)) - frac_split)), columns=['split_levels'])  # mode of each group if already exists
+
 try:
     weights = pd.DataFrame(weights, columns=['weights'])
 except:
-    weights = 1.0
-    # weights = pd.DataFrame(np.ones(shape = (df2_groups.shape[0], 1)), columns=['weights'])
+    weights = pd.DataFrame(np.ones(shape = (df2_groups.shape[0], 1)), columns=['weights'])
     #weights = pd.DataFrame(np.random.randint(low=0, high=5, size=(df2_groups.shape[0], 1)), columns=['weights']) ## for debug testing
 
 if segment:
-    if isinstance(weights, pd.DataFrame):
-        a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(df2_aggregate).any(1) & ~pd.isnull(weights).any(1)
-    else:
-        a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(df2_aggregate).any(1)
+    a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(df2_aggregate).any(1) & ~pd.isnull(weights).any(1)
 else:
-    if isinstance(weights, pd.DataFrame):
-        a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(weights).any(1)
-    else:
-        a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1)
+    a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(weights).any(1)
+
 
 df2 = df2[a]
 df2_gt = df2_gt[a]
 df2_groups = df2_groups[a]
 if segment: df2_aggregate = df2_aggregate[a]
-if isinstance(weights, pd.DataFrame): weights = weights[a]
+weights = weights[a]
 ### convert train/val groups to numeric if not already
 df2_groups.columns = ['col1']
 ip_addresses = np.sort(df2_groups.col1.unique())
 ip_dict = dict(zip(ip_addresses, range(len(ip_addresses))))
-df2_groups.replace(ip_dict, inplace=True)
+df2_groups = df2_groups.replace(ip_dict)
 
 
-## ensure consistency in train/val splits when there are groups
-if segment:
-    split_groups = Groupby(df2_aggregate.values)
-
-if not (df2_groups.iloc[:,0].unique().shape[0] >= 2):
-    #need to set the split level -- determine if grouped or not
-    if segment:
-        df2_groups = pd.DataFrame(split_groups.split(False, df2_groups.values, 0.667), columns=['split_levels'])
-    else:
-        df2_groups = pd.DataFrame(np.ceil(np.maximum(0, np.random.uniform(0, 1, (df2.shape[0], 1)) - .667)), columns=['split_levels'])
-else:
-    #just use the mode to ensure each group only has one split level
-    df2_groups = pd.DataFrame(split_groups.split(True, df2_groups.values), columns=['split_levels'])
+# ## ensure consistency in train/val splits when there are groups
+# if segment:
+#     split_groups = Groupby(df2_aggregate.values)
+#
+# if not (df2_groups.iloc[:,0].unique().shape[0] >= 2):
+#     #need to set the split level -- determine if grouped or not
+#     if segment:
+#         df2_groups = pd.DataFrame(split_groups.split(False, df2_groups.values, frac_split), columns=['split_levels'])
+#     else:
+#         df2_groups = pd.DataFrame(np.ceil(np.maximum(0, np.random.uniform(0, 1, (df2.shape[0], 1)) - frac_split)), columns=['split_levels'])
+# else:
+#     #just use the mode to ensure each group only has one split level
+#     if segment:
+#         df2_groups = pd.DataFrame(split_groups.split(True, df2_groups.values), columns=['split_levels'])
 
 
 ## break data into training and validation splits
@@ -294,27 +344,31 @@ y_train_in = dfTrain_gt.values.astype('float64')
 x_val_in = dfVal.values.astype('float64')
 y_val_in = dfVal_gt.values.astype('float64')
 
-if isinstance(weights, pd.DataFrame):
-    weights_train = weights.loc[df2_groups.iloc[:,].values[:,0] == a[0]].values.astype('float64')
-    weights_val = weights.loc[df2_groups.iloc[:, ].values[:, 0] == a[1]].values.astype('float64')
+
+weights_train = weights.loc[df2_groups.iloc[:,].values[:,0] == a[0]].values.astype('float64')
+weights_val = weights.loc[df2_groups.iloc[:, ].values[:, 0] == a[1]].values.astype('float64')
 
 if segment:
     #train
-    df2_aggregate_train = Groupby(df2_aggregate.loc[df2_groups.iloc[:,].values[:,0] == a[0]].values)
+    df2_aggregate_train = Groupby(df2_aggregate.loc[df2_groups.iloc[:,].values[:,0] == a[0]].values, use_tf=True)
+    weights_train = df2_aggregate_train.apply(np.mean, weights_train, broadcast=False)
     y_train_in = df2_aggregate_train.apply(np.mean, y_train_in, broadcast=False)
     #validation
-    df2_aggregate_val = Groupby(df2_aggregate.loc[df2_groups.iloc[:,].values[:,0] == a[1]].values)
+    df2_aggregate_val = Groupby(df2_aggregate.loc[df2_groups.iloc[:,].values[:,0] == a[1]].values, use_tf=True)
+    weights_val = df2_aggregate_val.apply(np.mean, weights_val, broadcast=False)
     y_val_in = df2_aggregate_val.apply(np.mean, y_val_in, broadcast=False)
 
-    if isinstance(weights, pd.DataFrame):
-        weights_train = df2_aggregate_train.apply(np.mean, weights_train, broadcast=False)
-        weights_val = df2_aggregate_val.apply(np.mean, weights_val, broadcast=False)
 
-#reg_in = np.float64(0)
-reg_in = np.float64(reg_in)
-#early_stop_limit = 2
+regL2_in = np.float64(regL2_in)
+var_reg_in = np.float64(var_reg_in)
 
+if len(x_train_in.shape) == 1: x_train_in = np.expand_dims(x_train_in, axis=1)
+if len(x_val_in.shape) == 1: x_val_in = np.expand_dims(x_val_in, axis=1)
+if len(weights_train.shape) == 1: weights_train = np.expand_dims(weights_train, axis=1)
 feature_shape = (None, x_train_in.shape[1])
+if len(y_train_in.shape) == 1: y_train_in = np.expand_dims(y_train_in, axis=1)
+if len(y_val_in.shape) == 1: y_val_in = np.expand_dims(y_val_in, axis=1)
+if len(weights_val.shape) == 1: weights_val = np.expand_dims(weights_val, axis=1)
 gt_shape = y_train_in.shape[1]
 
 #error checking
@@ -341,25 +395,43 @@ with tf.device("CPU:0"): ##L-BFGS is implemented on CPU with numpy so no use in 
         model.add(tf.keras.layers.Dense(units=gt_shape, input_shape=feature_shape, dtype=tf.float64))
 
 if loss_fun == "Classifier":
+    L1 = False
     loss = prediction_classifier
-elif loss_fun == "L1":
-    loss = prediction_loss_L1
-elif loss_fun == "L2":
-    loss = prediction_loss_L2
+else:
+    L1=True
+    loss = prediction_loss_regression
 
 if segment:
-    loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, reg=reg_in, grouper = df2_aggregate_train)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, reg=np.float64(0), x=np.float64(0), grouper = df2_aggregate_val)
+    loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, regL2 = regL2_in, regL1 = regL1_in, weights=weights_train, grouper = df2_aggregate_train, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, regL2 = -1, regL1 = -1, weights=weights_val, x=np.float64(0), grouper = df2_aggregate_val, var_reg = np.float64(0),std_reg = np.float64(0), L1=L1)
 else:
-    loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, grouper = None, reg = reg_in)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, reg=np.float64(0), grouper = None, x=np.float64(0))
+    loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, weights=weights_train, grouper = None, regL2 = regL2_in, regL1 = regL1_in, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = -1, regL1 = -1, x=np.float64(0), var_reg = np.float64(0),std_reg = std_reg_in, L1=L1)
 
 ## get size and shape of trainable variables (reshaping required for input/output from scipy optimization)
 ## as well as the tf trainable variable list for updating
 with tf.GradientTape() as tape:
-    prediction_loss = loss_train(x=np.float64(0))
+    prediction_loss, _, _ = loss_train(x=np.float64(0))
     var_list = tape.watched_variables()
-
+#################################################################################
+# ## calculate new gradient
+# with tf.GradientTape() as tape:
+#     prediction_loss, reg_penalty, predicted_var = loss_train(x=x_init)
+#
+# grad_list = []
+# for p in tape.gradient(prediction_loss, var_list):
+#     grad_list.extend(np.array(tf.reshape(p, [-1])))
+#
+# predicted_label = model(x_train_in)
+# predicted_label = df2_aggregate_train.apply_tf_unsorted_segment_mean(predicted_label)
+# grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, df2_aggregate_train.apply_tf_gather_nd(predicted_label)
+#
+# grouping_vals = df2_aggregate.loc[df2_groups.iloc[:,].values[:,0] == a[1]].values
+# ip_addresses = pd.unique(np.squeeze(grouping_vals))
+# ip_dict = dict(zip(ip_addresses, range(len(ip_addresses))))
+# grouping_vals = pd.DataFrame(grouping_vals).replace(ip_dict)
+# tf.math.unsorted_segment_mean(y_val_in, np.squeeze(grouping_vals.values), np.int(grouping_vals.nunique()))
+#########################################################################
 var_shapes = []
 var_locs = [0]
 for v in var_list:
