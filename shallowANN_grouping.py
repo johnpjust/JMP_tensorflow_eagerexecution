@@ -104,7 +104,6 @@ class Evaluator(object):
         self.loss_value, self.regL1, self.regL2, self.train_std_reg, self.train_var_reg = self.loss_train_fun(x=np.float64(0))
         self.grads_values = None
 
-
     def loss(self, x):
         # assert self.loss_value is None
         self.loss_value, self.grad_values, self.regL1, self.regL2, self.train_std_reg, self.train_var_reg = eval_loss_and_grads(x, self.loss_train_fun, self.var_list, self.var_shapes, self.var_locs) #eval_loss_and_grads
@@ -133,9 +132,9 @@ class Evaluator(object):
             tf.contrib.summary.scalar('predLoss_val_cntr', self.predLoss_val_cntr)
             tf.contrib.summary.scalar('regL1', self.regL1)
             tf.contrib.summary.scalar('regL2', self.regL2)
-            tf.contrib.summary.scalar('train_std_reg', self.train_std_reg)
+            tf.contrib.summary.scalar('train_abs_reg', self.train_std_reg)
             tf.contrib.summary.scalar('train_var_reg', self.train_var_reg)
-            tf.contrib.summary.scalar('val_std_reg', predicted_std_val)
+            tf.contrib.summary.scalar('val_abs_reg', predicted_std_val)
             tf.contrib.summary.scalar('val_var_reg', predicted_var_val)
 
 
@@ -180,7 +179,7 @@ def prediction_loss_regression(features, label, model, x, regL2 = -1.0, regL1 = 
         predicted_std = predicted_label
         predicted_label = grouper.apply_tf_unsorted_segment_mean(predicted_label)
         if var_reg >= 0: predicted_var = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, grouper.apply_tf_gather_nd(predicted_label))), axis=0)
-        if std_reg >= 0:  predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_var, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
+        if std_reg >= 0:  predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_std, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
     if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
     if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
     if L1: loss = smooth_abs_tf(tf.subtract(label,predicted_label))
@@ -231,7 +230,7 @@ regL1_in = 0
 var_reg_in = 0
 std_reg_in = 0
 n_hidden_units_in = 3
-loss_fun = "L1"#, "L2", "L1", "Classifier"
+loss_fun = "L2"#, "L2", "L1", "Classifier"
 activation_in = 'elu' #options = "lrelu", "relu", "tanh", "linear", "selu", "elu"
 early_stop_limit = 100
 maxiter = 500
