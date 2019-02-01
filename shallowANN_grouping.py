@@ -150,11 +150,11 @@ class Evaluator(object):
 #
 def prediction_classifier(features, label, model, x, regL2 = -1.0, regL1 = -1.0, grouper=None, weights=1.0, var_reg=-1.0, std_reg=-1.0, L1=False):
     predicted_label = model(features)
-    regL2_penalty = 0
-    regL1_penalty = 0
+    regL2_penalty = np.float64(0)
+    regL1_penalty = np.float64(0)
     if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
     if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
-    return tf.add(tf.add( tf.reduce_mean(tf.multiply(tf.losses.softmax_cross_entropy(label, predicted_label, reduce=None), weights, axis=0)), tf.multiply(regL2, regL2_penalty)), tf.multiply(regL1, regL1_penalty)), np.float64(regL1_penalty), np.float64(regL2_penalty), 0, 0
+    return tf.add(tf.add( tf.reduce_mean(tf.losses.softmax_cross_entropy(label, predicted_label, weights=tf.squeeze(weights)), axis=0), tf.multiply(regL2, regL2_penalty)), tf.multiply(regL1, regL1_penalty)), np.float64(regL1_penalty), np.float64(regL2_penalty), 0, 0
 
 # def prediction_loss_L2(features, label, model, x, reg = 0, grouper=None, weights=1.0, var_reg=None):
 #     predicted_label = model(features)
@@ -167,19 +167,21 @@ def prediction_classifier(features, label, model, x, regL2 = -1.0, regL1 = -1.0,
 #     loss = tf.squared_difference(label, predicted_label)
 #     return tf.reduce_sum(tf.add( tf.add(tf.reduce_mean(tf.multiply(loss, weights), axis=0), tf.multiply(reg,reg_penalty)), tf.multiply(var_reg, predicted_var ))), np.float64(reg_penalty), np.float64(predicted_var)
 
-def prediction_loss_regression(features, label, model, x, regL2 = -1.0, regL1 = -1.0, grouper=None, weights=1.0, var_reg=-1.0, std_reg=-1.0, L1=False):
+def prediction_loss_regression(features, label, model, x, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), grouper=None, weights=np.float64(1.0), var_reg=np.float64(-1.0), std_reg=np.float64(-1.0), L1=False):
     #uses an abs function approximation
     predicted_label = model(features)
-    predicted_var = 0
-    predicted_std = 0
-    regL2_penalty = 0
-    regL1_penalty = 0
+    predicted_var = np.float64(0)
+    predicted_std = np.float64(0)
+    regL2_penalty = np.float64(0)
+    regL1_penalty = np.float64(0)
     if grouper:
-        predicted_var = predicted_label
-        predicted_std = predicted_label
         predicted_label = grouper.apply_tf_unsorted_segment_mean(predicted_label)
-        if var_reg >= 0: predicted_var = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, grouper.apply_tf_gather_nd(predicted_label))), axis=0)
-        if std_reg >= 0:  predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_std, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
+        if var_reg >= 0:
+            predicted_var = predicted_label
+            predicted_var = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(tf.squared_difference(predicted_var, grouper.apply_tf_gather_nd(predicted_label))), axis=0)
+        if std_reg >= 0:
+            predicted_std = predicted_label
+            predicted_std = tf.reduce_mean(grouper.apply_tf_unsorted_segment_mean(smooth_abs_tf(tf.subtract(predicted_std, grouper.apply_tf_gather_nd(predicted_label)))), axis=0)
     if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
     if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
     if L1: loss = smooth_abs_tf(tf.subtract(label,predicted_label))
@@ -210,27 +212,25 @@ factr:  proportional to covergence tolerance (lower numbers on log scale are mor
 """
 
 ## program testing data
-# df = pd.read_excel(r'C:\Users\justjo\PycharmProjects\CottonNIRfit_updated\data\pick_strip_data.xlsx')
-df = pd.read_excel(r'C:\Users\justjo\PycharmProjects\HFRBmoistureFit\data\HF_RB_signalALLbyDiam.xlsx')
-df2 = pd.DataFrame(df.iloc[:,[*[i for i in range(6,12)]]])
-df2.res100k.loc[df2.res100k == 0] = 4E7
-df2.res5k.loc[df2.res5k == 0] = 4E7
-#df2 = pd.DataFrame(df.iloc[:,[*[i for i in range(145,458)]]])
+# df = pd.read_excel(r'C:\Users\justjo\PycharmProjects\HFRBmoistureFit\data\HF_RB_signalALLbyDiam.xlsx')
+# df2 = pd.DataFrame(df.iloc[:,[*[i for i in range(6,12)]]])
+# df2.res100k.loc[df2.res100k == 0] = 4E7
+# df2.res5k.loc[df2.res5k == 0] = 4E7
+# df2_gt = pd.DataFrame(df.iloc[:,[19]])
+# df2_aggregate = pd.DataFrame(df.iloc[:,[1]])
 
-#df2_gt = pd.DataFrame(df.iloc[:, [*[i for i in range(474, 477)]]] / 100)
-#df2_gt = pd.DataFrame(df.iloc[:,[-9]])
-df2_gt = pd.DataFrame(df.iloc[:,[19]])
-# df2_groups = pd.DataFrame(df.iloc[:, -1])
+df = pd.read_excel(r'C:\Users\justjo\PycharmProjects\CottonNIRfit_updated\data\pick_strip_data.xlsx')
+df2 = pd.DataFrame(df.iloc[:,[*[i for i in range(145,458)]]])
+df2_gt = pd.DataFrame(df.iloc[:, [*[i for i in range(474, 477)]]] / 100)
+# df2_gt = pd.DataFrame(df.iloc[:,[-9]])
+df2_groups = pd.DataFrame(df.iloc[:, -1])
 
-df2_aggregate = pd.DataFrame(df.iloc[:,[1]])
-
-
-regL2_in = 0
-regL1_in = 0
-var_reg_in = 0
-std_reg_in = 0
+regL2_in = -1.0
+regL1_in = -1.0
+var_reg_in = -1.0
+std_reg_in = -1.0
 n_hidden_units_in = 3
-loss_fun = "L2"#, "L2", "L1", "Classifier"
+loss_fun = "Classifier"#, "L2", "L1", "Classifier"
 activation_in = 'elu' #options = "lrelu", "relu", "tanh", "linear", "selu", "elu"
 early_stop_limit = 100
 maxiter = 500
@@ -287,7 +287,6 @@ if segment:
 else:
     a = ~pd.isnull(df2).any(1) & ~pd.isnull(df2_gt).any(1) & ~pd.isnull(df2_groups).any(1) & ~pd.isnull(weights).any(1)
 
-
 df2 = df2[a]
 df2_gt = df2_gt[a]
 df2_groups = df2_groups[a]
@@ -298,7 +297,6 @@ df2_groups.columns = ['col1']
 ip_addresses = np.sort(df2_groups.col1.unique())
 ip_dict = dict(zip(ip_addresses, range(len(ip_addresses))))
 df2_groups = df2_groups.replace(ip_dict)
-
 
 # ## ensure consistency in train/val splits when there are groups
 # if segment:
@@ -359,6 +357,8 @@ if segment:
 
 regL2_in = np.float64(regL2_in)
 var_reg_in = np.float64(var_reg_in)
+regL1_in = np.float64(regL1_in)
+std_reg_in = np.float64(std_reg_in)
 
 if len(x_train_in.shape) == 1: x_train_in = np.expand_dims(x_train_in, axis=1)
 if len(x_val_in.shape) == 1: x_val_in = np.expand_dims(x_val_in, axis=1)
@@ -392,19 +392,19 @@ with tf.device("CPU:0"): ##L-BFGS is implemented on CPU with numpy so no use in 
     else:
         model.add(tf.keras.layers.Dense(units=gt_shape, input_shape=feature_shape, dtype=tf.float64))
 
+L1 = False
 if loss_fun == "Classifier":
-    L1 = False
     loss = prediction_classifier
 else:
-    L1=True
+    if loss_fun == "L1":  L1=True
     loss = prediction_loss_regression
 
 if segment:
     loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, regL2 = regL2_in, regL1 = regL1_in, weights=weights_train, grouper = df2_aggregate_train, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), weights=weights_val, x=np.float64(0), grouper = df2_aggregate_val, var_reg = np.float64(0),std_reg = np.float64(0), L1=L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), weights=weights_val, x=np.float64(0), grouper = df2_aggregate_val, var_reg = np.float64(-tf.nn.relu(-var_reg_in)),std_reg = np.float64(-tf.nn.relu(-std_reg_in)), L1=L1)
 else:
     loss_train = functools.partial(loss, features=x_train_in, label=y_train_in, model=model, weights=weights_train, grouper = None, regL2 = regL2_in, regL1 = regL1_in, var_reg = var_reg_in, std_reg = std_reg_in, L1 = L1)
-    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), x=np.float64(0), var_reg = np.float64(0),std_reg = std_reg_in, L1=L1)
+    loss_val = functools.partial(loss, features=x_val_in, label=y_val_in, model=model, weights=weights_val, grouper = None, regL2 = np.float64(-1.0), regL1 = np.float64(-1.0), x=np.float64(0), var_reg = np.float64(-tf.nn.relu(-var_reg_in)),std_reg = np.float64(-tf.nn.relu(-std_reg_in)), L1=L1)
 
 
 ## get size and shape of trainable variables (reshaping required for input/output from scipy optimization)
