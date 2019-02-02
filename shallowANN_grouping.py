@@ -154,7 +154,7 @@ def prediction_classifier(features, label, model, x, regL2 = -1.0, regL1 = -1.0,
     regL1_penalty = np.float64(0)
     if regL2 >= 0:  regL2_penalty = tf.reduce_mean(tf.square(x))
     if regL1 >= 0:  regL1_penalty = tf.reduce_mean(smooth_abs_tf(x))
-    return tf.add(tf.add( tf.reduce_mean(tf.losses.softmax_cross_entropy(label, predicted_label, weights=tf.squeeze(weights)), axis=0), tf.multiply(regL2, regL2_penalty)), tf.multiply(regL1, regL1_penalty)), np.float64(regL1_penalty), np.float64(regL2_penalty), 0, 0
+    return tf.add(tf.add(tf.reduce_mean(tf.multiply(tf.losses.softmax_cross_entropy(label, predicted_label, reduction='none'),tf.squeeze(weights)), axis=0), tf.multiply(regL2, regL2_penalty)), tf.multiply(regL1, regL1_penalty)), np.float64(regL1_penalty), np.float64(regL2_penalty), 0, 0
 
 # def prediction_loss_L2(features, label, model, x, reg = 0, grouper=None, weights=1.0, var_reg=None):
 #     predicted_label = model(features)
@@ -225,16 +225,16 @@ df2_gt = pd.DataFrame(df.iloc[:, [*[i for i in range(474, 477)]]] / 100)
 # df2_gt = pd.DataFrame(df.iloc[:,[-9]])
 df2_groups = pd.DataFrame(df.iloc[:, -1])
 
-regL2_in = -1.0
-regL1_in = -1.0
-var_reg_in = -1.0
-std_reg_in = -1.0
+regL2_in = .01
+regL1_in = .01
+var_reg_in = 0.01
+std_reg_in = 0.01
 n_hidden_units_in = 3
 loss_fun = "Classifier"#, "L2", "L1", "Classifier"
 activation_in = 'elu' #options = "lrelu", "relu", "tanh", "linear", "selu", "elu"
 early_stop_limit = 100
 maxiter = 500
-factr = 1E7
+factr = 1E1
 frac_split = 0.667
 
 ## include these in JMP implementation
