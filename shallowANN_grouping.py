@@ -74,16 +74,17 @@ def eval_loss_and_grads(x, loss_train, var_list, var_shapes, var_locs):
     ## var_locs:  slicing indecies to use on x prior to reshaping
 
     ## update variables
+    grad_list = []
     for i in range(len(var_list)):
         var_list[i].assign(np.reshape(x[var_locs[i]:(var_locs[i+1])], var_shapes[i]))
 
     ## calculate new gradient
-    with tf.GradientTape() as tape:
-        prediction_loss, regL1_penalty, regL2_penalty, predicted_std, predicted_var = loss_train(x=x)
+    with tf.device("CPU:0"):
+        with tf.GradientTape() as tape:
+            prediction_loss, regL1_penalty, regL2_penalty, predicted_std, predicted_var = loss_train(x=x)
 
-    grad_list = []
-    for p in tape.gradient(prediction_loss, var_list):
-        grad_list.extend(np.array(tf.reshape(p, [-1])))
+        for p in tape.gradient(prediction_loss, var_list):
+            grad_list.extend(np.array(tf.reshape(p, [-1])))
 
     grad_list = [v if v is not None else 0 for v in grad_list]
 
@@ -329,9 +330,9 @@ train_sds = dfTrain.std(axis=0)
 dfTrain = dfTrain / train_sds
 dfVal = dfVal / train_sds
 
-#config = tf.ConfigProto()
-#config.gpu_options.allow_growth = True
-#tf.enable_eager_execution(config = config)
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+tf.enable_eager_execution(config = config)
 tf.enable_eager_execution()
 
 x_train_in = dfTrain.values.astype('float64')
@@ -409,9 +410,10 @@ else:
 
 ## get size and shape of trainable variables (reshaping required for input/output from scipy optimization)
 ## as well as the tf trainable variable list for updating
-with tf.GradientTape() as tape:
-    prediction_loss, _, _, _, _ = loss_train(x=np.float64(0))
-    var_list = tape.watched_variables()
+with tf.device("CPU:0"):
+    with tf.GradientTape() as tape:
+        prediction_loss, _, _, _, _ = loss_train(x=np.float64(0))
+        var_list = tape.watched_variables()
 #################################################################################
 # ## calculate new gradient
 # with tf.GradientTape() as tape:
@@ -464,8 +466,9 @@ try:
 except:
     pass
 
-global_step = tf.train.get_or_create_global_step()
-global_step.assign(0)
+with tf.device("CPU:0"):
+    global_step = tf.train.get_or_create_global_step()
+    global_step.assign(0)
 writer = tf.contrib.summary.create_file_writer(TWpath)
 writer.set_as_default()
 
